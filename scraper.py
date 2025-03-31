@@ -1,82 +1,200 @@
+import re
+import json
+import time
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.firefox.options import Options  # Firefox Options
-import json
-import time
+from selenium.webdriver.firefox.options import Options
 
-options = Options()
-options.set_capability("acceptInsecureCerts", True)
-options.add_argument("--headless")  # Remove if you want to see the browser
+def scrape_fighter_details(driver, fighter_relative_url):
+    """
+    Navigate to the fighter's detail page given a URL like '/athlete/alexandre-pantoja'
+    Scrape extra details: Nickname, Wins/Losses/Draws, etc.
+    Return them as a dict (keys: nickname, wins, losses, draws, nationality, fighting_style, age, etc.)
+    """
+    # Construct the full URL if it's a relative link
+    if not fighter_relative_url.startswith("http"):
+        detail_url = "https://www.ufc.com" + fighter_relative_url
+    else:
+        detail_url = fighter_relative_url
 
-driver = webdriver.Firefox(options=options)
-
-fighters = []  # We'll accumulate all fighters here across all letters
-
-alphabet = "abcdefghijklmnopqrstuvwxyz"
-for letter in alphabet:
-    url = f"http://ufcstats.com/statistics/fighters?char={letter}&page=all"
-    print(f"Scraping letter '{letter}' - {url}")
-    driver.get(url)
-
-    # Brief pause for the page to load
+    driver.get(detail_url)
+    # Use WebDriverWait or a short sleep to ensure page is loaded
     time.sleep(2)
-    
-    # If there's an SSL interstitial, try to click "Advanced" & "Proceed" (probably not needed in Firefox, but kept just in case)
-    advanced_buttons = driver.find_elements(By.ID, "details-button")
-    if advanced_buttons:
-        advanced_buttons[0].click()
-        time.sleep(1)
-        
-        proceed_links = driver.find_elements(By.ID, "proceed-link")
-        if proceed_links:
-            proceed_links[0].click()
-            time.sleep(2)
 
-    # (Optional) Accept cookies if needed
+    detail_data = {
+        "nickname": None,
+        "wins": None,
+        "losses": None,
+        "draws": None,
+        "nationality": None,
+        "fighting_style": None,
+        "age": None,
+    }
+
+    # Example: Nickname <p class="hero-profile__nickname">"Raw Dawg"</p>
     try:
-        accept_btn = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
-        )
-        accept_btn.click()
+        nickname_el = driver.find_element(By.CSS_SELECTOR, "p.hero-profile__nickname")
+        detail_data["nickname"] = nickname_el.text.strip()
     except:
         pass
 
-    time.sleep(2)  # Let the page load fully
+    # Example: record <p class="hero-profile__division-body">17-7-0 (W-L-D)</p>
+    try:
+        record_el = driver.find_element(By.CSS_SELECTOR, ".hero-profile__division-body")
+        record_text = record_el.text.strip()  # e.g. "17-7-0 (W-L-D)"
+        match = re.search(r'(\d+)-(\d+)-(\d+)', record_text)
+        if match:
+            detail_data["wins"]   = match.group(1)
+            detail_data["losses"] = match.group(2)
+            detail_data["draws"]  = match.group(3)
+    except:
+        pass
 
-    # Scrape fighters for this letter
-    rows = driver.find_elements(By.CSS_SELECTOR, "tr.b-statistics__table-row")
-    
-    for row in rows:
-        cells = row.find_elements(By.CSS_SELECTOR, "td.b-statistics__table-col")
-        if len(cells) < 10:
+
+    return detail_data
+
+# -------------------------------------------------------------------
+# MAIN SCRIPT
+# -------------------------------------------------------------------
+
+options = Options()
+options.set_capability("acceptInsecureCerts", True)
+# options.add_argument("--headless")  # Uncomment to run headless
+driver = webdriver.Firefox(options=options)
+
+fighters_info = []  # Will hold all fighters (champ + top 15) with minimal data
+
+# 1) Load the Rankings page once
+rankings_url = "https://www.ufc.com/rankings"
+driver.get(rankings_url)
+
+time.sleep(3)
+
+# (Optional) Handle cookie popups
+try:
+    accept_btn = WebDriverWait(driver, 5).until(
+        EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
+    )
+    accept_btn.click()
+except:
+    pass
+
+# Collect all divisions
+groupings = driver.find_elements(By.CSS_SELECTOR, "div.view-grouping")
+
+for g in groupings:
+    header_el = g.find_element(By.CSS_SELECTOR, "div.view-grouping-header")
+    raw_division_name = header_el.get_attribute("innerText").strip()
+
+    division_lower = raw_division_name.lower()
+    if "pound-for-pound" in division_lower:
+        continue
+    if "women" in division_lower:
+        continue
+
+    division_name = raw_division_name
+
+    table_el = g.find_element(By.TAG_NAME, "table")
+
+    # Champion <caption>
+    champion_name_els = table_el.find_elements(By.CSS_SELECTOR, "caption h5 a")
+    champion_candidate = None
+    if champion_name_els:
+        anchor_el = champion_name_els[0]
+        anchor_text        = anchor_el.text.strip()
+        anchor_inner_text  = anchor_el.get_attribute("innerText").strip()
+        anchor_inner_html  = anchor_el.get_attribute("innerHTML").strip()
+
+        if anchor_text:
+            champion_candidate = anchor_text
+        elif anchor_inner_text:
+            champion_candidate = anchor_inner_text
+        else:
+            champion_candidate = anchor_inner_html
+        champion_candidate = champion_candidate.strip()
+
+    champion_indicator_els = table_el.find_elements(By.CSS_SELECTOR, "caption h6 span.text")
+    is_champion_label = (len(champion_indicator_els) > 0)
+    champion_name = champion_candidate if champion_candidate and is_champion_label else None
+
+    # If champion is found, store them with champion=True
+    if champion_name:
+        champion_link = champion_name_els[0].get_attribute("href")
+        if not champion_link.startswith("http"):
+            champion_link = "https://www.ufc.com" + champion_link
+
+        item = {
+            "division": division_name,
+            "rank": "Champion",
+            "name": champion_name,
+            "champion": True,
+            "url": champion_link
+        }
+        fighters_info.append(item)
+
+    # Now parse top-15
+    rows = table_el.find_elements(By.CSS_SELECTOR, "tbody tr")
+    for idx, row in enumerate(rows[:15], start=1):
+        tds = row.find_elements(By.TAG_NAME, "td")
+        if len(tds) < 2:
             continue
 
-        first_name = cells[0].text.strip()
-        last_name = cells[1].text.strip()
-        weight_class = cells[4].text.strip()
-        wins = cells[7].text.strip()
-        losses = cells[8].text.strip()
-        draws = cells[9].text.strip()
+        rank_text = tds[0].text.strip()
+        name_text = tds[1].text.strip()
 
-        link_tag = cells[0].find_element(By.TAG_NAME, "a")
-        fighter_url = link_tag.get_attribute("href")
+        # If name_text == champion_name, skip duplication
+        if champion_name and (name_text == champion_name):
+            continue
 
-        fighters.append({
-            "first_name": first_name,
-            "last_name": last_name,
-            "weight_class": weight_class,
-            "wins": wins,
-            "losses": losses,
-            "draws": draws,
-            "profile_url": fighter_url,
-        })
+        # Grab link
+        name_anchor = tds[1].find_element(By.TAG_NAME, "a")
+        fighter_link = name_anchor.get_attribute("href")
+        if not fighter_link.startswith("http"):
+            fighter_link = "https://www.ufc.com" + fighter_link
+
+        item = {
+            "division": division_name,
+            "rank": rank_text,
+            "name": name_text,
+            "champion": False,
+            "url": fighter_link,
+        }
+        fighters_info.append(item)
+
+# Done collecting basic info from the rankings page
+# -------------------------------------------------------------------
+
+# Visit each fighter's detail page exactly once
+detailed_fighters = []
+
+for fdata in fighters_info:
+    detail = scrape_fighter_details(driver, fdata["url"])
+
+    # Merge the detail data into the fighter info
+    fighter_data = {
+        "division": fdata["division"],
+        "rank": fdata["rank"],
+        "name": fdata["name"],
+        "champion": fdata["champion"],
+        # Extra from detail
+        "nickname": detail["nickname"],
+        "wins": detail["wins"],
+        "losses": detail["losses"],
+        "draws": detail["draws"],
+        "nationality": detail["nationality"],
+        "fighting_style": detail["fighting_style"],
+        "age": detail["age"]
+    }
+
+    detailed_fighters.append(fighter_data)
 
 driver.quit()
 
-# Save all fighters to JSON
-with open("ufc_fighters.json", "w") as f:
-    json.dump(fighters, f, indent=2)
+# 4) Save final data to JSON
+with open("ufc_fighters_top15.json", "w", encoding="utf-8") as f:
+    json.dump(detailed_fighters, f, indent=2, ensure_ascii=False)
 
-print(f"🎉 Done! Scraped {len(fighters)} fighters in total.")
+print(f"\nDone! Scraped {len(detailed_fighters)} fighters in total.")
