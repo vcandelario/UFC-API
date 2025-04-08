@@ -9,11 +9,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.firefox.options import Options
 
 def scrape_fighter_details(driver, fighter_relative_url):
-    """
-    Navigate to the fighter's detail page given a URL like '/athlete/alexandre-pantoja'
-    Scrape extra details: Nickname, Wins/Losses/Draws, etc.
-    Return them as a dict (keys: nickname, wins, losses, draws, nationality, fighting_style, age, etc.)
-    """
     # Construct the full URL if it's a relative link
     if not fighter_relative_url.startswith("http"):
         detail_url = "https://www.ufc.com" + fighter_relative_url
@@ -163,9 +158,6 @@ for g in groupings:
             "url": fighter_link,
         }
         fighters_info.append(item)
-
-# Done collecting basic info from the rankings page
-# -------------------------------------------------------------------
 
 # Visit each fighter's detail page exactly once
 detailed_fighters = []
